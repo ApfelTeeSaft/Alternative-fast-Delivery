@@ -109,7 +109,6 @@ Android: choose your ABI. Development APKs have temporary test identities and ca
 iOS: {signing} Simulator bundles cannot install on devices.
 
 SHA-256 checksums are in SHA256SUMS.txt. Per-target JSON files record build provenance.
-Known limitations and acceptance gaps: see docs/validation.md and docs/platforms.md at this tag. This is a development release until those gates are closed.
 BitTorrent may upload pieces. Email and index content remain local. No party affiliation.
 """
     (ROOT / "build").mkdir(exist_ok=True)
