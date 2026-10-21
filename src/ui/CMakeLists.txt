@@ -86,7 +86,9 @@ if(NOT ANDROID AND NOT IOS)
   qt_generate_deploy_qml_app_script(TARGET alternativefastdelivery
     OUTPUT_SCRIPT deploy_script NO_UNSUPPORTED_PLATFORM_ERROR)
   if(UNIX AND NOT APPLE)
-    qt_generate_deploy_script(TARGET alternativefastdelivery OUTPUT_SCRIPT deploy_script CONTENT [[
+    # The versionless macro expands plugins_found before installation, dropping
+    # the private Qt libraries required by QML plugins from portable packages.
+    qt6_generate_deploy_script(TARGET alternativefastdelivery OUTPUT_SCRIPT deploy_script CONTENT [[
       qt_deploy_qml_imports(TARGET alternativefastdelivery PLUGINS_FOUND plugins_found)
       qt_deploy_runtime_dependencies(
         EXECUTABLE "$<TARGET_FILE:alternativefastdelivery>"

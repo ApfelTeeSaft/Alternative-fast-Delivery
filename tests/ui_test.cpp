@@ -68,6 +68,29 @@ static void click(QQuickWindow *window, const QString &name) {
     QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, center.toPoint());
     QCoreApplication::processEvents();
 }
+static void readerTab(QQuickWindow *window, int index) {
+    QTest::qWait(60);
+    auto *viewport = item(window->contentItem(), "readerTabsViewport");
+    auto *tab = item(window->contentItem(), "readerTab" + QString::number(index));
+    CHECK(viewport && tab);
+    // A narrow window or larger CI font metrics can put a tab off-screen.
+    // Reveal it in the horizontal viewport before sending an actual mouse click.
+    const auto offset = viewport->property("contentX").toReal();
+    const auto left = tab->mapToItem(viewport, QPointF()).x();
+    auto next = offset;
+    if (left < 0)
+        next += left;
+    else if (left + tab->width() > viewport->width())
+        next += left + tab->width() - viewport->width();
+    viewport->setProperty(
+        "contentX",
+        qBound(0.0, next, qMax(0.0, viewport->property("contentWidth").toReal() - viewport->width())));
+    QCoreApplication::processEvents();
+    const auto center = tab->mapToItem(viewport, QPointF(tab->width() / 2, tab->height() / 2));
+    CHECK(QRectF(0, 0, viewport->width(), viewport->height()).contains(center));
+    click(window, "readerTab" + QString::number(index));
+    CHECK(window->property("readerTab").toInt() == index);
+}
 int main(int argc, char **argv) {
     configure_rendering(argc, argv);
     QQuickStyle::setStyle("Basic");
@@ -385,9 +408,9 @@ int main(int argc, char **argv) {
             wait(c);
             CHECK(window->property("reading").toBool());
             CHECK(c.text().contains("copper lantern"));
-            click(window, "readerTab2");
+            readerTab(window, 2);
             CHECK(window->property("readerTab").toInt() == 2);
-            click(window, "readerTab0");
+            readerTab(window, 0);
             for (int i = 0; i < 10; ++i) {
                 QCoreApplication::processEvents();
                 QThread::msleep(20);
@@ -430,7 +453,7 @@ int main(int argc, char **argv) {
                 }
                 CHECK(window->grabWindow().save(screenshots + "/mobile-reader.png"));
             }
-            click(window, "readerTab1");
+            readerTab(window, 1);
             CHECK(window->property("readerTab").toInt() == 1);
             click(window, "backToListButton");
             CHECK(!window->property("reading").toBool());
@@ -439,7 +462,11 @@ int main(int argc, char **argv) {
             CHECK(window->property("section").toInt() == 3);
             CHECK(window->property("reading").toBool());
             CHECK(c.messages().size() == 1);
-            click(window, "readerTab2");
+            window->resize(360, 640);
+            QTest::qWait(100);
+            readerTab(window, 3);
+            readerTab(window, 0);
+            readerTab(window, 2);
             CHECK(window->property("readerTab").toInt() == 2);
             c.openLocal(archive);
             wait(c);

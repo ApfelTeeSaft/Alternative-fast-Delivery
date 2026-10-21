@@ -21,6 +21,18 @@ def run(*args, env=None):
 
 
 def install_qt(host, target, arch, sdk):
+    # Android's Linux host tools need Qt's bundled ICU, not Ubuntu's ICU ABI.
+    # Install the host separately so the target's archive filter cannot omit it.
+    if host.startswith("linux") and target == "android":
+        install_qt(
+            host,
+            "desktop",
+            "linux_gcc_64" if host == "linux" else "linux_gcc_arm64",
+            sdk,
+        )
+    archives = ["qtbase", "qtdeclarative", "qtsvg", "qttools", "qttranslations"]
+    if host.startswith("linux") and target == "desktop":
+        archives += ["icu", "qtwayland"]
     run(
         sys.executable,
         "-m",
@@ -34,11 +46,19 @@ def install_qt(host, target, arch, sdk):
         "-O",
         sdk,
         "--archives",
-        "qtbase",
-        "qtdeclarative",
-        "qtsvg",
-        "qttranslations",
+        *archives,
     )
+
+
+def host_qt_path(sdk, system):
+    host = (
+        sdk
+        / "6.10.3"
+        / {"Windows": "msvc2022_64", "Darwin": "macos"}.get(system, "gcc_64")
+    )
+    if system == "Windows" and not host.exists():
+        host = sdk / "6.10.3/mingw_64"
+    return host
 
 
 def notices(stage, installed, qt):
@@ -185,23 +205,14 @@ def main():
     if mobile:
         definitions += [
             "-DVCPKG_CHAINLOAD_TOOLCHAIN_FILE="
-            + str(qt / "lib/cmake/Qt6/qt.toolchain.cmake")
+            + str(qt / "lib/cmake/Qt6/qt.toolchain.cmake"),
+            "-DQT_HOST_PATH=" + str(host_qt_path(sdk, platform.system())),
         ]
     if a.platform == "android":
         definitions += [
             "-DQT_ANDROID_DEPLOYMENT_TYPE="
             + ("Release" if os.environ.get("ANDROID_KEYSTORE_B64") else "Debug")
         ]
-        host_qt = (
-            sdk
-            / "6.10.3"
-            / {"Windows": "msvc2022_64", "Darwin": "macos"}.get(
-                platform.system(), "gcc_64"
-            )
-        )
-        if os.name == "nt" and not host_qt.exists():
-            host_qt = sdk / "6.10.3/mingw_64"
-        definitions += ["-DQT_HOST_PATH=" + str(host_qt)]
         if a.arch in ("arm64-v8a", "x86_64"):
             definitions += ["-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON"]
     if a.platform == "windows" and a.arch == "arm64":

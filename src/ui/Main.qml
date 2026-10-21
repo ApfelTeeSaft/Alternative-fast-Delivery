@@ -995,6 +995,7 @@ ApplicationWindow {
                                 Layout.fillHeight: true
                                 spacing: 0
                                 Flickable {
+                                    objectName: "readerTabsViewport"
                                     Layout.fillWidth: true
                                     Layout.preferredHeight: root.mobile ? 64 : 50
                                     contentWidth: readerTabs.width + 16
