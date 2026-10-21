@@ -1,0 +1,15 @@
+AlternativeFastDelivery uses Qt, libtorrent, OpenSSL, Boost, mailio and SQLite.
+Dependency licenses do not grant a license to the application itself. The owner
+must select an application license before public distribution.
+
+These license texts were obtained unchanged from Qt's v6.10.3 source tree:
+https://code.qt.io/cgit/qt/qtbase.git/tree/LICENSES?h=v6.10.3
+Qt's copyright and component records accompany desktop packages as SPDX SBOMs.
+Transitive native dependency notices accompany packages as individual port files.
+
+Corresponding Qt source:
+https://download.qt.io/archive/qt/6.10/6.10.3/single/
+Application source/build instructions and Qt replacement/relinking requirements
+are described in docs/dependencies.md. Mobile relinking/installation compliance
+and application licensing are unresolved distribution gates. These development
+artifacts do not imply that those gates have been completed.

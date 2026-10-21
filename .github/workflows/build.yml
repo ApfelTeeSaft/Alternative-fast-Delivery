@@ -1,0 +1,102 @@
+name: Native matrix
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        default: development
+    secrets:
+      ANDROID_KEYSTORE_B64:
+        required: false
+      ANDROID_KEY_ALIAS:
+        required: false
+      ANDROID_STORE_PASSWORD:
+        required: false
+      ANDROID_KEY_PASSWORD:
+        required: false
+      IOS_CERTIFICATE_B64:
+        required: false
+      IOS_CERTIFICATE_PASSWORD:
+        required: false
+      IOS_PROFILE_B64:
+        required: false
+permissions:
+  contents: read
+jobs:
+  build:
+    name: ${{ matrix.platform }} / ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {platform: windows, arch: x64, runner: windows-2022, msvc: amd64}
+          - {platform: windows, arch: arm64, runner: windows-11-arm, msvc: amd64_arm64}
+          - {platform: linux, arch: x64, runner: ubuntu-24.04}
+          - {platform: linux, arch: arm64, runner: ubuntu-24.04-arm}
+          - {platform: macos, arch: x64, runner: macos-15-intel}
+          - {platform: macos, arch: arm64, runner: macos-15}
+          - {platform: android, arch: arm64-v8a, runner: ubuntu-24.04}
+          - {platform: android, arch: armeabi-v7a, runner: ubuntu-24.04}
+          - {platform: android, arch: x86, runner: ubuntu-24.04}
+          - {platform: android, arch: x86_64, runner: ubuntu-24.04}
+          - {platform: ios, arch: arm64, runner: macos-26}
+          - {platform: ios-simulator, arch: x64, runner: macos-15-intel}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: e456309491fd875487bf02b8a0dca76c1b1b00cc
+          path: .sdk/vcpkg
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: matrix.platform == 'windows'
+        with:
+          arch: ${{ matrix.msvc }}
+      - uses: actions/setup-java@v4
+        if: matrix.platform == 'android'
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Linux graphics build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build patchelf pkg-config libgl1-mesa-dev libegl1-mesa-dev libxkbcommon-dev libxkbcommon-x11-0 libxcb-cursor0 libxcb-keysyms1 libxcb-image0 libxcb-icccm4 libxcb-render-util0 libxcb-xinerama0 libxcb-shape0 libxcb-randr0 libxcb-sync1 libxcb-xfixes0 libx11-xcb1
+      - name: Android toolchain
+        if: matrix.platform == 'android'
+        shell: bash
+        run: |
+          curl -fL https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip -o "$RUNNER_TEMP/android-tools.zip"
+          unzip -q "$RUNNER_TEMP/android-tools.zip" -d "$RUNNER_TEMP/afd-android-tools"
+          tool="$RUNNER_TEMP/afd-android-tools/cmdline-tools/bin/sdkmanager"
+          (yes || true) | "$tool" --sdk_root="$ANDROID_HOME" --licenses > /dev/null
+          "$tool" --sdk_root="$ANDROID_HOME" 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.2.12479018'
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+      - name: Build tooling
+        run: python -m pip install aqtinstall==3.3.0 ninja==1.13.0 cmake==3.31.6
+      - name: Release safety tests
+        run: python tests/release_test.py
+      - name: Build, test and package
+        env:
+          VCPKG_ROOT: ${{ github.workspace }}/.sdk/vcpkg
+          VCPKG_DISABLE_METRICS: '1'
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          IOS_CERTIFICATE_B64: ${{ secrets.IOS_CERTIFICATE_B64 }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          IOS_PROFILE_B64: ${{ secrets.IOS_PROFILE_B64 }}
+          IOS_EXPORT_METHOD: ${{ vars.IOS_EXPORT_METHOD || 'debugging' }}
+        run: python scripts/build.py --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --version ${{ inputs.version }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: afd-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14

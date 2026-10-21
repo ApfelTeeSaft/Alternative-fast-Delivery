@@ -1,0 +1,11 @@
+/build/
+/dist/
+/.sdk/
+/vcpkg_installed/
+*.user
+*.p12
+*.pfx
+*.mobileprovision
+*.keystore
+*.jks
+__pycache__/

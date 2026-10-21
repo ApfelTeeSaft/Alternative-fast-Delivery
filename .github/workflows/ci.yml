@@ -1,0 +1,15 @@
+name: Validate native application
+on:
+  push:
+    branches: ['**']
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  matrix:
+    uses: ./.github/workflows/build.yml
+    with:
+      version: development

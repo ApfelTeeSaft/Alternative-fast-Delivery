@@ -1,2 +1,7 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+*.cpp text eol=lf
+*.hpp text eol=lf
+*.qml text eol=lf
+*.py text eol=lf
+*.yml text eol=lf
+*.cmake text eol=lf
+*.md text eol=lf
