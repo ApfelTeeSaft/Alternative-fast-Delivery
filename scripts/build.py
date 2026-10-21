@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import plistlib
 import shutil
 import subprocess
 import sys
@@ -59,6 +60,68 @@ def host_qt_path(sdk, system):
     if system == "Windows" and not host.exists():
         host = sdk / "6.10.3/mingw_64"
     return host
+
+
+def simulator_bundle(build):
+    # CMake's RUNTIME_OUTPUT_DIRECTORY can put the app in Release/, without
+    # Xcode's usual -iphonesimulator suffix. Ask Xcode for the actual product.
+    products = json.loads(
+        subprocess.check_output(
+            [
+                "xcodebuild",
+                "-project",
+                str(build / "AlternativeFastDelivery.xcodeproj"),
+                "-scheme",
+                "alternativefastdelivery",
+                "-configuration",
+                "Release",
+                "-sdk",
+                "iphonesimulator",
+                "-destination",
+                "generic/platform=iOS Simulator",
+                "-showBuildSettings",
+                "-json",
+            ],
+            cwd=ROOT,
+            text=True,
+        )
+    )
+    matches = [
+        p["buildSettings"]
+        for p in products
+        if p.get("target") == "alternativefastdelivery"
+    ]
+    if len(matches) != 1:
+        raise RuntimeError(
+            "Expected one simulator application target in Xcode build settings"
+        )
+    settings = matches[0]
+    if settings.get("PLATFORM_NAME") != "iphonesimulator":
+        raise RuntimeError(
+            "Xcode selected a device target instead of the iOS simulator"
+        )
+    product = settings.get("FULL_PRODUCT_NAME", "")
+    if not product.endswith(".app") or Path(product).name != product:
+        raise RuntimeError("Xcode did not report an application bundle")
+    bundle = Path(settings["TARGET_BUILD_DIR"]) / product
+    if not (bundle / "Info.plist").is_file():
+        raise RuntimeError(
+            "Simulator application is missing its Info.plist: " + str(bundle)
+        )
+    with (bundle / "Info.plist").open("rb") as stream:
+        info = plistlib.load(stream)
+    executable = info.get("CFBundleExecutable", "")
+    if "iPhoneSimulator" not in info.get("CFBundleSupportedPlatforms", []):
+        raise RuntimeError(
+            "Application bundle is not built for the iOS simulator: " + str(bundle)
+        )
+    if (
+        not executable
+        or Path(executable).name != executable
+        or not (bundle / executable).is_file()
+    ):
+        raise RuntimeError("Simulator application has no executable: " + str(bundle))
+    return bundle
 
 
 def notices(stage, installed, qt):
@@ -290,6 +353,9 @@ def main():
             package_env["PATH"] = os.pathsep.join(
                 str(p) for p in (stage / "bin", system / "System32", system)
             )
+        elif a.platform == "macos":
+            # macdeployqt bundles Cocoa, not the SDK's offscreen test plugin.
+            package_env["QT_QPA_PLATFORM"] = "cocoa"
         subprocess.run(
             [str(executable), "--interaction-smoke-test"],
             cwd=ROOT,
@@ -467,11 +533,9 @@ def main():
                     archive.name,
                 )
         else:
-            apps = list(build.glob("**/Release-iphonesimulator/*.app"))
-            if len(apps) != 1:
-                raise RuntimeError("Expected simulator application")
+            app = simulator_bundle(build)
             shutil.make_archive(
-                str(dist / (name + "-simulator")), "zip", apps[0].parent, apps[0].name
+                str(dist / (name + "-simulator")), "zip", app.parent, app.name
             )
     metadata = {
         "version": a.version,
