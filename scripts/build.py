@@ -13,8 +13,10 @@ import sys
 import tarfile
 import zipfile
 import struct
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
+AQT_CONFIG = Path(__file__).with_name("aqt.ini")
 
 
 def run(*args, env=None):
@@ -34,10 +36,12 @@ def install_qt(host, target, arch, sdk):
     archives = ["qtbase", "qtdeclarative", "qtsvg", "qttools", "qttranslations"]
     if host.startswith("linux") and target == "desktop":
         archives += ["icu", "qtwayland"]
-    run(
+    command = [
         sys.executable,
         "-m",
         "aqt",
+        "--config",
+        AQT_CONFIG,
         "install-qt",
         host,
         target,
@@ -48,7 +52,30 @@ def install_qt(host, target, arch, sdk):
         sdk,
         "--archives",
         *archives,
+    ]
+    # A streamed read timeout can escape aqt's per-request retries. Retry the
+    # installation with another Qt mirror, retaining checksum verification.
+    mirrors = (
+        None,
+        "https://ftp.fau.de/qtproject",
+        "https://ftp.jaist.ac.jp/pub/qtproject",
     )
+    for attempt, mirror in enumerate(mirrors):
+        args = command + (["--base", mirror] if mirror else [])
+        try:
+            run(*args)
+            return
+        except subprocess.CalledProcessError:
+            if attempt == len(mirrors) - 1:
+                raise
+            delay = (5, 15)[attempt]
+            print(
+                f"Qt installation failed for {host}/{target}/{arch}. "
+                f"Retrying with another mirror in {delay}s "
+                f"(attempt {attempt + 2}/{len(mirrors)}).",
+                flush=True,
+            )
+            time.sleep(delay)
 
 
 def host_qt_path(sdk, system):

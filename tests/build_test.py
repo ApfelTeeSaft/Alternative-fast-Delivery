@@ -1,12 +1,14 @@
 """Exercise CI toolchain setup without downloading SDKs or building dependencies."""
 
 import importlib.util
+import configparser
 import json
 import os
 from pathlib import Path
 import plistlib
 import sys
 import tempfile
+import subprocess
 import unittest
 import zipfile
 from unittest.mock import patch
@@ -23,6 +25,68 @@ class Configured(Exception):
 
 
 class BuildTests(unittest.TestCase):
+    def test_qt_download_uses_worker_timeout_configuration_without_retry_on_success(
+        self,
+    ):
+        config = configparser.ConfigParser()
+        config.read(module.AQT_CONFIG)
+        self.assertEqual(config.getfloat("requests", "connection_timeout"), 20)
+        self.assertEqual(config.getfloat("requests", "response_timeout"), 120)
+        self.assertEqual(config.get("requests", "hash_algorithm"), "sha256")
+        self.assertFalse(
+            config.getboolean(
+                "requests", "INSECURE_NOT_FOR_PRODUCTION_ignore_hash", fallback=False
+            )
+        )
+        with patch.object(module, "run") as run, patch.object(
+            module.time, "sleep"
+        ) as sleep:
+            module.install_qt("mac", "ios", "ios", Path("sdk"))
+        run.assert_called_once()
+        args = run.call_args.args
+        self.assertEqual(Path(args[args.index("--config") + 1]), module.AQT_CONFIG)
+        self.assertLess(args.index("--config"), args.index("install-qt"))
+        sleep.assert_not_called()
+
+    def test_qt_download_recovers_on_an_alternate_mirror(self):
+        failure = subprocess.CalledProcessError(1, ["aqt", "install-qt"])
+        with patch.object(
+            module, "run", side_effect=[failure, None]
+        ) as run, patch.object(module.time, "sleep") as sleep:
+            module.install_qt("mac", "ios", "ios", Path("sdk"))
+        first, second = [call.args for call in run.call_args_list]
+        self.assertNotIn("--base", first)
+        self.assertIn("--base", second)
+        self.assertEqual(second[: len(first)], first)
+        self.assertEqual(second[-1], "https://ftp.fau.de/qtproject")
+        sleep.assert_called_once_with(5)
+
+    def test_qt_download_exhaustion_preserves_the_failure(self):
+        failures = [
+            subprocess.CalledProcessError(1, ["aqt", "install-qt"]) for _ in range(3)
+        ]
+        with patch.object(module, "run", side_effect=failures) as run, patch.object(
+            module.time, "sleep"
+        ) as sleep:
+            with self.assertRaises(subprocess.CalledProcessError) as error:
+                module.install_qt("mac", "ios", "ios", Path("sdk"))
+        self.assertIs(error.exception, failures[-1])
+        self.assertEqual(run.call_count, 3)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [5, 15])
+        mirrors = [call.args[-1] for call in run.call_args_list[1:]]
+        self.assertEqual(len(set(mirrors)), 2)
+
+    def test_android_download_retries_target_without_reinstalling_host(self):
+        failure = subprocess.CalledProcessError(1, ["aqt", "install-qt"])
+        with patch.object(
+            module, "run", side_effect=[None, failure, None]
+        ) as run, patch.object(module.time, "sleep"):
+            module.install_qt("linux", "android", "android_arm64_v8a", Path("sdk"))
+        targets = [
+            call.args[call.args.index("install-qt") + 2] for call in run.call_args_list
+        ]
+        self.assertEqual(targets, ["desktop", "android", "android"])
+
     def test_macos_package_uses_its_bundled_platform_plugin(self):
         for arch in ("x64", "arm64"):
             with self.subTest(arch=arch), tempfile.TemporaryDirectory() as directory:
@@ -217,10 +281,15 @@ class BuildTests(unittest.TestCase):
         with patch.object(module, "run") as run:
             module.install_qt("linux", "android", "android_arm64_v8a", Path("sdk"))
             host, target = [call.args for call in run.call_args_list]
-            self.assertEqual(host[4:8], ("linux", "desktop", "6.10.3", "linux_gcc_64"))
-            self.assertIn("icu", host[host.index("--archives") + 1 :])
+            start = host.index("install-qt") + 1
             self.assertEqual(
-                target[4:8], ("linux", "android", "6.10.3", "android_arm64_v8a")
+                host[start : start + 4], ("linux", "desktop", "6.10.3", "linux_gcc_64")
+            )
+            self.assertIn("icu", host[host.index("--archives") + 1 :])
+            start = target.index("install-qt") + 1
+            self.assertEqual(
+                target[start : start + 4],
+                ("linux", "android", "6.10.3", "android_arm64_v8a"),
             )
             self.assertNotIn("icu", target[target.index("--archives") + 1 :])
 
