@@ -11,6 +11,7 @@
 #include <libtorrent/error_code.hpp>
 #include <libtorrent/load_torrent.hpp>
 #include <libtorrent/magnet_uri.hpp>
+#include <libtorrent/socket.hpp>
 #include <libtorrent/torrent_flags.hpp>
 #include <libtorrent/torrent_info.hpp>
 #include <libtorrent/torrent_status.hpp>
@@ -22,6 +23,32 @@ namespace lt = libtorrent;
         if (!(x))                                                                                            \
             throw std::runtime_error(std::string("Failed: ") + #x);                                          \
     } while (false)
+static unsigned short block_udp_port(boost::asio::ip::udp::socket &udp) {
+    // Reserve UDP while checking that TCP is available on the same port. This
+    // reproduces hosts where a UDP bind is denied even though TCP can listen.
+    auto loopback = boost::asio::ip::address_v4::loopback();
+    for (int attempt = 0; attempt < 32; ++attempt) {
+        if (udp.is_open())
+            udp.close();
+        udp.open(boost::asio::ip::udp::v4());
+#ifdef _WIN32
+        int exclusive = 1;
+        CHECK(::setsockopt(udp.native_handle(), SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+                           reinterpret_cast<const char *>(&exclusive), sizeof(exclusive)) == 0);
+#endif
+        udp.bind({loopback, 0});
+        auto port = udp.local_endpoint().port();
+        boost::asio::ip::tcp::acceptor tcp(udp.get_executor());
+        tcp.open(boost::asio::ip::tcp::v4());
+        lt::error_code ec;
+        tcp.bind({loopback, port}, ec);
+        if (!ec)
+            return port;
+        if (ec != boost::asio::error::address_in_use && ec != boost::asio::error::access_denied)
+            throw boost::system::system_error(ec);
+    }
+    throw std::runtime_error("Could not reserve a UDP-only port for the loopback test");
+}
 static void many_file_metadata(const std::filesystem::path &path, int count, int piece_bytes,
                                std::size_t padding = 0) {
     std::ofstream out(path, std::ios::binary);
@@ -84,8 +111,14 @@ int main(int argc, char **argv) {
         }
         auto loaded = lt::load_torrent_buffer(metainfo);
         auto ti = loaded.ti;
+        stage = "UDP bind restriction fixture";
+        boost::asio::io_context socket_context;
+        boost::asio::ip::udp::socket blocked_udp(socket_context);
+        auto listen_port = block_udp_port(blocked_udp);
         lt::settings_pack settings;
-        settings.set_str(lt::settings_pack::listen_interfaces, "127.0.0.1:0");
+        settings.set_str(lt::settings_pack::listen_interfaces, "127.0.0.1:" + std::to_string(listen_port));
+        settings.set_int(lt::settings_pack::max_retry_port_bind, 0);
+        settings.set_bool(lt::settings_pack::listen_system_port_fallback, false);
         settings.set_bool(lt::settings_pack::enable_dht, false);
         settings.set_bool(lt::settings_pack::enable_lsd, false);
         settings.set_bool(lt::settings_pack::enable_upnp, false);
@@ -110,6 +143,8 @@ int main(int argc, char **argv) {
             }
             stage = "loopback TCP listen";
             unsigned short peer_port = 0;
+            bool udp_bind_failed = false;
+            int listen_retries = 0;
             while (!peer_port) {
                 CHECK(std::chrono::steady_clock::now() < deadline);
                 seed.wait_for_alert(std::chrono::milliseconds(50));
@@ -119,10 +154,26 @@ int main(int argc, char **argv) {
                     if (auto *ready = lt::alert_cast<lt::listen_succeeded_alert>(alert);
                         ready && ready->socket_type == lt::socket_type_t::tcp)
                         peer_port = static_cast<unsigned short>(ready->port);
-                    if (auto *failure = lt::alert_cast<lt::listen_failed_alert>(alert))
-                        throw std::runtime_error(failure->message());
+                    if (auto *failure = lt::alert_cast<lt::listen_failed_alert>(alert)) {
+                        // A failed UDP bind discards the TCP listener too.
+                        // Release the deliberate conflict and reopen the
+                        // prechecked port. Other errors must still fail.
+                        if (failure->socket_type == lt::socket_type_t::utp &&
+                            failure->op == lt::operation_t::sock_bind &&
+                            (failure->error == boost::asio::error::address_in_use ||
+                             failure->error == boost::asio::error::access_denied) &&
+                            listen_retries++ < 8) {
+                            udp_bind_failed = true;
+                            if (blocked_udp.is_open())
+                                blocked_udp.close();
+                            seed.reopen_network_sockets();
+                        } else {
+                            throw std::runtime_error(failure->message());
+                        }
+                    }
                 }
             }
+            CHECK(udp_bind_failed);
             afd::TorrentEngine engine(root / "leech", true);
             engine.open((root / "fixture.torrent").string());
             CHECK(engine.files().size() == 3);
@@ -256,7 +307,8 @@ int main(int argc, char **argv) {
             auto piece_error = rejected_message(many, "big-piece");
             CHECK(piece_error.find("33554432") != std::string::npos);
             CHECK(piece_error.find("16 MiB") != std::string::npos);
-            std::cout << "PASS loopback: exact range, cross-file pieces, no full download, verified bytes, "
+            std::cout << "PASS loopback: recovery from blocked UDP bind; exact range, cross-file pieces, "
+                         "no full download, verified bytes, "
                          "pause/resume, cancellation, no peers, magnet parsing; 100001-file metadata, "
                          "local metadata above 10 MB, separate file/piece limits\n";
         }
