@@ -70,13 +70,7 @@ jobs:
       - name: Android toolchain
         if: matrix.platform == 'android'
         shell: bash
-        run: |
-          curl -fL https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip -o "$RUNNER_TEMP/android-tools.zip"
-          unzip -q "$RUNNER_TEMP/android-tools.zip" -d "$RUNNER_TEMP/afd-android-tools"
-          tool="$RUNNER_TEMP/afd-android-tools/cmdline-tools/bin/sdkmanager"
-          (yes || true) | "$tool" --sdk_root="$ANDROID_HOME" --licenses > /dev/null
-          "$tool" --sdk_root="$ANDROID_HOME" 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.2.12479018'
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+        run: bash scripts/setup-android.sh
       - name: Build tooling
         # Upstream #952 fixes the renamed host-*.bat tools in Qt 6.10.1+ ARM64.
         run: python -m pip install "aqtinstall @ git+https://github.com/miurahr/aqtinstall.git@c84e1470349e5bedbeee977bd62ec495d50d65b6" ninja==1.13.0 cmake==3.31.6
