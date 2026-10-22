@@ -751,7 +751,8 @@ void Controller::show_message(std::string raw, bool standalone) {
     QString signatures;
     for (const auto &r : results)
         signatures += q(afd::status_name(r.status) + " · " + r.domain + " · " + r.detail + "\n");
-    post([this, text, original, headers, mime, signatures, row] {
+    auto warning = q(m.warning).trimmed();
+    post([this, text, original, headers, mime, signatures, row, warning] {
         text_ = text;
         raw_ = original;
         headers_ = headers;
@@ -762,6 +763,8 @@ void Controller::show_message(std::string raw, bool standalone) {
             coverage_ = "One email · ready to read";
         }
         notice_ = "Email opened. Remote images and attachments stay closed.";
+        if (!warning.isEmpty())
+            notice_ += " " + warning;
     });
 }
 void Controller::inspectMessage(qint64 id) {

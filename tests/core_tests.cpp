@@ -21,14 +21,15 @@ using namespace afd;
             throw std::runtime_error(std::string("Check failed: ") + #x + " at " +                           \
                                      std::to_string(__LINE__));                                              \
     } while (false)
-template <class F> void rejects(F f) {
+template <class F> void rejects(F f, const char *context = "operation") {
     bool failed = false;
     try {
         f();
     } catch (const std::exception &) {
         failed = true;
     }
-    CHECK(failed);
+    if (!failed)
+        throw std::runtime_error(std::string("Expected rejection: ") + context);
 }
 class Memory final : public Source {
   public:
@@ -191,6 +192,132 @@ int main(int argc, char **argv) {
             CHECK(m.text.find("hello world") != m.text.npos);
             CHECK(m.subject == "caf\xc3\xa9");
             CHECK(m.parts.back().size == 3);
+        });
+        test("LF and mixed-ending archives decode without altering original headers", [] {
+            std::string lf = "From: sender@example.invalid\nTo: group:;\nSubject: LF archive\n"
+                             "Content-Type: multipart/mixed; boundary=fixture\n\n"
+                             "--fixture\nContent-Type: text/plain; charset=utf-8\n"
+                             "Content-Transfer-Encoding: quoted-printable\n\nhello=20lantern\n"
+                             "--fixture\nContent-Type: application/octet-stream; name=test.txt\n"
+                             "Content-Disposition: attachment; filename=test.txt\n"
+                             "Content-Transfer-Encoding: base64\n\nYWJj\n--fixture--\n";
+            const auto original = lf;
+            auto m = parse_message(lf);
+            CHECK(m.text.find("hello lantern") != m.text.npos);
+            CHECK(m.attachments);
+            CHECK(m.parts.back().size == 3);
+            CHECK(m.warning.find("line endings") != m.warning.npos);
+            CHECK(m.headers.front().raw == "From: sender@example.invalid\n");
+            CHECK(lf == original);
+            lf.replace(0, lf.find('\n') + 1, "From: sender@example.invalid\r\n");
+            CHECK(parse_message(lf).text.find("hello lantern") != std::string::npos);
+        });
+        test("reading mail does not require SMTP-valid addresses or dates", [] {
+            for (auto from : {"Undisclosed recipients:;", "", "display name without address"}) {
+                auto m = parse_message(std::string("From: ") + from +
+                                       "\r\nTo: local recipient\r\n"
+                                       "Date: Tue, 32 Dec 2018 12:00:00 +0100\r\nSubject: Readable "
+                                       "archive\r\n\r\nreadable body\r\n");
+                CHECK(m.sender == from);
+                CHECK(m.text.find("readable body") != m.text.npos);
+            }
+            CHECK(parse_message("Subject: Draft\n\nbody without a From header\n").text.find("body without") !=
+                  std::string::npos);
+        });
+        test("encoded headers decode separately and malformed words preserve the body", [] {
+            auto m =
+                parse_message("From: =?UTF-8?Q?M=C3=BCller?= <a@example.invalid>\r\n"
+                              "Subject: =?ISO-8859-1?Q?caf=E9?= =?UTF-8?Q?_lantern?=\r\n\r\nreadable\r\n");
+            CHECK(m.sender == "M\xc3\xbcller <a@example.invalid>");
+            CHECK(m.subject == "caf\xc3\xa9 lantern");
+            m = parse_message("Subject: =?UTF-8?Q?=C3=9Cber?=\n\nreadable\n");
+            CHECK(m.subject == "\xc3\x9c"
+                               "ber");
+            m = parse_message("Subject: =?UTF-8?Q?unfinished\n\nreadable body\n");
+            CHECK(m.subject == "=?UTF-8?Q?unfinished");
+            CHECK(m.text.find("readable body") != m.text.npos);
+            CHECK(m.warning.find("encoded header") != m.warning.npos);
+        });
+        test("archive MIME recovery preserves Unicode names and irregular quoted-printable", [] {
+            std::string raw = "Subject: Recovery\nContent-Type: multipart/mixed; boundary=fixture\n\n"
+                              "--fixture\nContent-Type: text/plain; charset=utf-8\n"
+                              "Content-Transfer-Encoding: quoted-printable\n\n"
+                              "caf\xc3\xa9=20lantern\rstill here=\ncontinued\n--fixture-extra\n"
+                              "--fixture\nContent-Type: application/octet-stream\n"
+                              "Content-Disposition: attachment; filename=\"caf\xc3\xa9.txt\"\n"
+                              "Content-Transfer-Encoding: base64\n\nYWJj\n"
+                              "--fixture\nContent-Type: text/plain\n\n--fixture--\n";
+            auto original = raw;
+            auto m = parse_message(raw);
+            CHECK(m.text.find("caf\xc3\xa9 lantern\rstill herecontinued") != m.text.npos);
+            CHECK(m.text.find("--fixture-extra") != m.text.npos);
+            CHECK(m.parts.size() == 4);
+            CHECK(m.parts[2].name == "caf\xc3\xa9.txt");
+            CHECK(m.parts[2].size == 3);
+            CHECK(m.parts[3].size == 0);
+            CHECK(m.attachments);
+            CHECK(m.warning.find("recovered") != m.warning.npos);
+            CHECK(m.headers.front().raw == "Subject: Recovery\n");
+            CHECK(raw == original);
+        });
+        test("nested short boundaries recover without duplicating already decoded text", [] {
+            auto m = parse_message("Content-Type: multipart/mixed; boundary=outer\n\n"
+                                   "--outer\nContent-Type: text/plain\n\nfirst body\n"
+                                   "--outer\nContent-Type: multipart/alternative; boundary=b\n\n"
+                                   "--b \t\nContent-Type: text/plain\n\nsecond body\n"
+                                   "--b-- \n--outer--\n");
+            CHECK(m.text == "first bodysecond body");
+            CHECK(m.parts.size() == 4);
+            CHECK(m.warning.find("recovered") != m.warning.npos);
+        });
+        test("archive recovery retains malformed escapes but rejects unsafe structure", [] {
+            auto m = parse_message("Content-Type: text/plain; charset=utf-8\n"
+                                   "Content-Transfer-Encoding: quoted-printable\n\n"
+                                   "caf\xc3\xa9 =ZZ end=\n");
+            CHECK(m.text.find("=ZZ") != m.text.npos);
+            CHECK(m.warning.find("escape") != m.warning.npos);
+            auto attachment = "Content-Type: application/octet-stream; name=\"caf\xc3\xa9.txt\"\n"
+                              "Content-Disposition: attachment; filename=\"caf\xc3\xa9.txt\"\n";
+            rejects(
+                [&] {
+                    parse_message(std::string(attachment) + "Content-Transfer-Encoding: base64\n\n%%%\n");
+                },
+                "invalid recovered base64");
+            rejects(
+                [&] {
+                    parse_message(std::string(attachment) + "Content-Transfer-Encoding: unknown\n\nbody\n");
+                },
+                "unknown recovered encoding");
+            std::string many = "Content-Type: multipart/mixed; boundary=b\n\n";
+            for (int i = 0; i < 257; ++i)
+                many += std::string("--b\n") + attachment + "\nbytes\n";
+            many += "--b--\n";
+            rejects([&] { parse_message(many); }, "recovered part count");
+            rejects(
+                [] {
+                    parse_message("Content-Type: multipart/mixed; boundary=b\n"
+                                  "Content-Disposition: inline; name=\"caf\xc3\xa9\"\n\n"
+                                  "--different\n\nbody\n");
+                },
+                "missing recovered boundary");
+        });
+        test("LF decoding does not turn unavailable DKIM bytes into a valid signature", [] {
+            auto raw = rfc_vector();
+            raw.erase(std::remove(raw.begin(), raw.end(), '\r'), raw.end());
+            auto m = parse_message(raw);
+            CHECK(m.text.find("We lost the game") != m.text.npos);
+            for (const auto &r : verify_dkim(raw, keys))
+                CHECK(r.status == DkimStatus::Inconclusive);
+        });
+        test("LF archive indexing includes the recovered searchable body", [&] {
+            Memory archive(
+                envelope +
+                "From: local sender\nTo: group:;\nSubject: LF message\n\nsearchable copper lantern\n");
+            Index index(dir / "lf.db", "lf-fixture", archive.size());
+            index.build(archive, true);
+            CHECK(index.coverage().messages == 1);
+            CHECK(index.coverage().omitted == 0);
+            CHECK(index.query("lantern").size() == 1);
         });
         test("parser limits", [] {
             rejects([] { parse_message("Broken\r\n\r\nbody"); });

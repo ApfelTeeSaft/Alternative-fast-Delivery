@@ -160,6 +160,16 @@ int main(int argc, char **argv) {
             c.verify(false);
             wait(c);
             CHECK(c.signatures().contains("Missing signature"));
+            const QByteArray lf = "From: local sender\nSubject: Archive recovery\n"
+                                  "Content-Type: text/plain; charset=utf-8\n"
+                                  "Content-Transfer-Encoding: quoted-printable\n\n"
+                                  "caf\xc3\xa9=20copper\rlantern\n";
+            c.openLocal(write("archive-export.eml", lf));
+            wait(c);
+            CHECK(c.text().contains(QString::fromUtf8("caf\xc3\xa9 copper\rlantern")));
+            CHECK(c.raw() == QString::fromUtf8(lf));
+            CHECK(c.headers().contains("Archive recovery"));
+            CHECK(c.notice().contains("recovered"));
             auto html = eml;
             html.replace("Content-Type: text/plain", "Content-Type: text/html");
             html.replace(
